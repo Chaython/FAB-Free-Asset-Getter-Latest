@@ -4,6 +4,8 @@
 // @version     2.2.2
 // @description A script to get all free assets from the FAB marketplace. Fixes the "Sort" button issue and adds robust Auto-Scrolling. Fork of the original by Noslipper (没拖鞋) & subtixx.
 // @author      Chaython
+// @homepageURL https://github.com/Chaython/FAB-Free-Asset-Getter-Latest
+// @supportURL  https://github.com/Chaython/FAB-Free-Asset-Getter-Latest/issues
 // @match       https://www.fab.com/channels/*
 // @match       https://www.fab.com/sellers/*
 // @match       https://www.fab.com/zh-cn/channels/*
