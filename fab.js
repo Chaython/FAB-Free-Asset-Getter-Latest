@@ -1,18 +1,12 @@
 // ==UserScript==
 // @name        FAB Free Asset Getter
 // @namespace   https://greasyfork.org/en/users/1443067-chaython
-// @version     2.2.2
+// @version     2.2.6
 // @description A script to get all free assets from the FAB marketplace. Fixes the "Sort" button issue and adds robust Auto-Scrolling. Fork of the original by Noslipper (没拖鞋) & subtixx.
 // @author      Chaython
 // @homepageURL https://github.com/Chaython/FAB-Free-Asset-Getter-Latest
 // @supportURL  https://github.com/Chaython/FAB-Free-Asset-Getter-Latest/issues
-// @match       https://www.fab.com/channels/*
-// @match       https://www.fab.com/sellers/*
-// @match       https://www.fab.com/zh-cn/channels/*
-// @match       https://www.fab.com/zh-cn/sellers/*
-// @match       https://www.fab.com/limited-time-free
-// @match       https://www.fab.com/search?*
-// @match       https://www.fab.com/zh-cn/search?*
+// @match       https://www.fab.com/*
 // @grant       none
 // @license     AGPL-3.0-or-later
 // @icon        https://www.google.com/s2/favicons?sz=64&domain=fab.com
@@ -146,15 +140,26 @@
                 if(!detailsReq.ok) continue;
                 let details = await detailsReq.json();
 
-                // Find free offer
+                // Find free offer with Priority: Professional > Personal
                 let freeOfferId = null;
                 if(details.licenses) {
+                    let professionalFree = null;
+                    let standardFree = null;
+
                     for(let lic of details.licenses) {
                         if(lic.priceTier && lic.priceTier.price === 0) {
-                            freeOfferId = lic.offerId;
-                            break;
+                            const name = (lic.name || "").toLowerCase();
+                            // Check for professional keywords
+                            if (name.includes("professional")) {
+                                professionalFree = lic.offerId;
+                            } else {
+                                standardFree = lic.offerId;
+                            }
                         }
                     }
+
+                    // Select Professional if available, otherwise fallback to Standard/Personal
+                    freeOfferId = professionalFree || standardFree;
                 }
 
                 if (!freeOfferId) continue;
@@ -242,22 +247,39 @@
 
         const btn = document.createElement("button");
         btn.id = 'fab-auto-btn';
-        btn.textContent = "Get Free Assets";
+
+        // Check if we are on the homepage (or language variant homepages)
+        const isHomePage = window.location.pathname === "/" || window.location.pathname === "/zh-cn";
+
+        if (isHomePage) {
+            btn.textContent = "Go to Free Search";
+            btn.style.backgroundColor = "#007bff"; // Blue for navigation
+        } else {
+            btn.textContent = "Get Free Assets";
+            btn.style.backgroundColor = "#45C761"; // Green for action
+        }
+
         Object.assign(btn.style, {
             position: "fixed", bottom: "80px", right: "20px", zIndex: "2147483647",
-            padding: "12px 24px", backgroundColor: "#45C761", color: "black",
+            padding: "12px 24px", color: "white",
             border: "2px solid white", borderRadius: "8px", fontWeight: "bold",
             cursor: "pointer", boxShadow: "0 4px 12px rgba(0,0,0,0.3)", fontSize: "14px",
             fontFamily: "sans-serif"
         });
 
         btn.onclick = () => {
-            btn.disabled = true;
-            btn.textContent = "Running... (Check Console)";
-            btn.style.backgroundColor = "#e0e0e0";
-            btn.style.color = "#666";
-            btn.style.cursor = "default";
-            startLoop();
+            if (isHomePage) {
+                // Redirect to search page with is_free=1
+                window.location.href = "https://www.fab.com/search?&is_free=1";
+            } else {
+                // Run the scraper
+                btn.disabled = true;
+                btn.textContent = "Running... (Check Console)";
+                btn.style.backgroundColor = "#e0e0e0";
+                btn.style.color = "#666";
+                btn.style.cursor = "default";
+                startLoop();
+            }
         };
 
         document.body.appendChild(btn);
