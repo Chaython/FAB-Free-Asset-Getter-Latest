@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name        FAB Free Asset Getter
+// @name        FAB Free Asset Getter (Fixed Auth)
 // @namespace   https://greasyfork.org/en/users/1443067-chaython
-// @version     2.2.6
-// @description A script to get all free assets from the FAB marketplace. Fixes the "Sort" button issue and adds robust Auto-Scrolling. Fork of the original by Noslipper (没拖鞋) & subtixx.
-// @author      Chaython
+// @version     2.2.8
+// @description A script to get all free assets from the FAB marketplace. Includes 401 Auth protection and smart skipping.
+// @author      Chaython (Updated by Coding Partner)
 // @homepageURL https://github.com/Chaython/FAB-Free-Asset-Getter-Latest
 // @supportURL  https://github.com/Chaython/FAB-Free-Asset-Getter-Latest/issues
 // @match       https://www.fab.com/*
@@ -15,6 +15,7 @@
 (function () {
     `use strict`;
     var notificationQueueContainer = null;
+    var scriptIsRunning = false; // Flag to help us stop the loop if needed
 
     // --- UTILS ---
     function showToast(message, type = 'success', duration = 3000) {
@@ -47,6 +48,7 @@
     }
 
     function getCSRFToken() {
+        // Method 1: Check Cookies
         let cookies = document.cookie.split(";");
         for (let i = 0; i < cookies.length; i++) {
             let cookie = cookies[i].trim();
@@ -54,53 +56,47 @@
                 return cookie.split("=")[1];
             }
         }
+
+        // Method 2: Check Meta Tags (Fallback)
+        let metaToken = document.querySelector('meta[name="csrf-token"], meta[name="xsrf-token"]');
+        if (metaToken) {
+            return metaToken.getAttribute('content');
+        }
+
         return "";
     }
 
     // --- CORE LOGIC ---
-
-    // 1. Scan the CURRENT visible part of the page for items
     function scanVisibleItems() {
-        // Broad selectors to catch everything
         const allLinks = document.querySelectorAll("a[href*='/listings/']");
-
         let items = [];
+
         allLinks.forEach(link => {
             if(link.closest('footer')) return;
 
             const url = link.href;
             const id = url.split("/").pop();
 
-            // --- UPDATED NAME PARSING LOGIC ---
             let title = "Unknown Asset";
-
-            // Strategy 1: Check image alt text (Very reliable on FAB)
             const img = link.querySelector("img");
+
             if (img && img.alt && img.alt.length > 0) {
                 title = img.alt;
-            }
-            // Strategy 2: Check standard headers inside the link
-            else {
+            } else {
                 const textNode = link.querySelector("[class*='Typography'], h3, h2, span.text");
                 if (textNode && textNode.innerText.trim().length > 0) {
                     title = textNode.innerText.trim();
-                }
-                // Strategy 3: Check raw text of the link
-                else if (link.innerText.trim().length > 0) {
+                } else if (link.innerText.trim().length > 0) {
                     title = link.innerText.trim();
                 }
             }
 
-            // Fallback: If title is still "Unknown Asset", use the ID so the user sees SOMETHING
             if (title === "Unknown Asset" && id) {
                 title = `Asset #${id}`;
             }
 
-            // Cleanup title (remove newlines)
             title = title.replace(/[\n\r]+/g, ' ').trim();
-            // ----------------------------------
 
-            // Helper to check if node is already owned
             const isOwned = (node) => {
                 const text = node.innerText || node.textContent || "";
                 const parentText = node.parentElement ? node.parentElement.innerText : "";
@@ -113,56 +109,62 @@
                 const card = link.closest("div[class*='Card'], div[class*='Stack']") || link.parentElement;
                 const owned = isOwned(card || link);
 
-                items.push({
-                    id: id,
-                    name: title,
-                    url: url,
-                    isOwned: owned,
-                    element: link
-                });
+                items.push({ id: id, name: title, url: url, isOwned: owned, element: link });
             }
         });
         return items;
     }
 
-    // 2. Process a specific list of items
     async function processItems(items) {
         let processedCount = 0;
+        const currentToken = getCSRFToken();
+
+        if (!currentToken) {
+            console.error("[FAB Scraper] CRITICAL: Could not find CSRF token.");
+            showToast("Error: Security token missing. Please log in or refresh.", "error", 5000);
+            return -1; // -1 indicates a fatal error to the main loop
+        }
 
         for (let item of items) {
+            if (!scriptIsRunning) break; // Allow emergency stop
             if (item.isOwned) continue;
 
             try {
                 // A. Check details
                 let detailsReq = await fetch(`https://www.fab.com/i/listings/${item.id}`, {
-                    headers: { "X-CsrfToken": getCSRFToken(), "X-Requested-With": "XMLHttpRequest" }
+                    headers: { "X-CsrfToken": currentToken, "X-Requested-With": "XMLHttpRequest" }
                 });
+
                 if(!detailsReq.ok) continue;
                 let details = await detailsReq.json();
 
-                // Find free offer with Priority: Professional > Personal
                 let freeOfferId = null;
-                if(details.licenses) {
+
+                if(details.licenses && Array.isArray(details.licenses)) {
                     let professionalFree = null;
                     let standardFree = null;
 
                     for(let lic of details.licenses) {
-                        if(lic.priceTier && lic.priceTier.price === 0) {
-                            const name = (lic.name || "").toLowerCase();
-                            // Check for professional keywords
+                        const price = lic?.priceTier?.price;
+                        const promoPrice = lic?.priceTier?.promotionalPrice;
+
+                        if(price === 0 || price === "0" || promoPrice === 0 || promoPrice === "0") {
+                            const name = (lic?.name || "").toLowerCase();
+
                             if (name.includes("professional")) {
-                                professionalFree = lic.offerId;
+                                professionalFree = lic.offerId || lic.id;
                             } else {
-                                standardFree = lic.offerId;
+                                standardFree = lic.offerId || lic.id;
                             }
                         }
                     }
-
-                    // Select Professional if available, otherwise fallback to Standard/Personal
                     freeOfferId = professionalFree || standardFree;
                 }
 
-                if (!freeOfferId) continue;
+                if (!freeOfferId) {
+                    console.warn(`[FAB Scraper] Skipped ${item.name} (Not actually free or no free license found)`);
+                    continue;
+                }
 
                 // B. Add to library
                 showToast(`Adding: ${item.name}...`, "info", 1500);
@@ -171,39 +173,53 @@
 
                 let addReq = await fetch(`https://www.fab.com/i/listings/${item.id}/add-to-library`, {
                     method: "POST",
-                    headers: { "X-CsrfToken": getCSRFToken(), "X-Requested-With": "XMLHttpRequest" },
+                    headers: { "X-CsrfToken": currentToken, "X-Requested-With": "XMLHttpRequest" },
                     body: formData
                 });
 
                 if (addReq.ok) {
                     showToast(`Success: ${item.name}`, "success");
                     processedCount++;
-                    // Mark visually as owned
                     item.element.style.border = "3px solid #45C761";
                     item.element.style.boxSizing = "border-box";
+                } else if (addReq.status === 401) {
+                    console.error(`[FAB Scraper] 401 Unauthorized encountered. Session may have expired.`);
+                    showToast("Error 401: Session expired. Please refresh the page.", "error", 5000);
+                    return -1; // Halt processing on 401
+                } else {
+                     console.error(`[FAB Scraper] Failed to add ${item.name}. Status:`, addReq.status);
                 }
             } catch (e) {
-                console.error(e);
+                console.error(`[FAB Scraper] Error processing ${item.name}:`, e);
             }
-            // Polite delay
+
             await new Promise(r => setTimeout(r, 600));
         }
         return processedCount;
     }
 
-    // 3. MAIN LOOP
     async function startLoop() {
+        scriptIsRunning = true;
         showToast("Starting Auto-Scroll & Claim...", "success");
 
         let previousHeight = 0;
         let noChangeCount = 0;
         let totalAdded = 0;
 
-        while(true) {
+        while(scriptIsRunning) {
             const currentItems = scanVisibleItems();
             console.log(`Scanned ${currentItems.length} items in current view`);
 
             const addedNow = await processItems(currentItems);
+
+            // If processItems returns -1, we hit a critical auth error. Stop the script.
+            if (addedNow === -1) {
+                scriptIsRunning = false;
+                document.getElementById('fab-auto-btn').textContent = "Failed. Refresh Page.";
+                document.getElementById('fab-auto-btn').style.backgroundColor = "#dc3545"; // Red
+                break;
+            }
+
             totalAdded += addedNow;
 
             previousHeight = document.body.scrollHeight;
@@ -216,9 +232,6 @@
 
             if (newHeight <= previousHeight) {
                 noChangeCount++;
-                console.log(`Page height didn't change. Attempt ${noChangeCount}/3`);
-
-                // Jiggle scroll to trigger observers
                 window.scrollBy(0, -300);
                 await new Promise(r => setTimeout(r, 500));
                 window.scrollTo(0, document.body.scrollHeight);
@@ -226,6 +239,9 @@
 
                 if (noChangeCount >= 4) {
                     showToast("Finished! No new items loading.", "success", 5000);
+                    scriptIsRunning = false;
+                    document.getElementById('fab-auto-btn').textContent = "Done!";
+                    document.getElementById('fab-auto-btn').style.backgroundColor = "#45C761";
                     break;
                 }
             } else {
@@ -248,15 +264,14 @@
         const btn = document.createElement("button");
         btn.id = 'fab-auto-btn';
 
-        // Check if we are on the homepage (or language variant homepages)
         const isHomePage = window.location.pathname === "/" || window.location.pathname === "/zh-cn";
 
         if (isHomePage) {
             btn.textContent = "Go to Free Search";
-            btn.style.backgroundColor = "#007bff"; // Blue for navigation
+            btn.style.backgroundColor = "#007bff";
         } else {
             btn.textContent = "Get Free Assets";
-            btn.style.backgroundColor = "#45C761"; // Green for action
+            btn.style.backgroundColor = "#45C761";
         }
 
         Object.assign(btn.style, {
@@ -269,10 +284,8 @@
 
         btn.onclick = () => {
             if (isHomePage) {
-                // Redirect to search page with is_free=1
                 window.location.href = "https://www.fab.com/search?&is_free=1";
             } else {
-                // Run the scraper
                 btn.disabled = true;
                 btn.textContent = "Running... (Check Console)";
                 btn.style.backgroundColor = "#e0e0e0";
@@ -283,7 +296,6 @@
         };
 
         document.body.appendChild(btn);
-        window.fabRun = startLoop;
     }
 
     if (document.readyState === "complete" || document.readyState === "interactive") {
