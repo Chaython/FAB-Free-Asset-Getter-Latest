@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name        FAB Free Asset Getter (Fixed Auth)
+// @name        FAB Free Asset Getter (Fixed Redirect)
 // @namespace   https://greasyfork.org/en/users/1443067-chaython
-// @version     2.2.8
-// @description A script to get all free assets from the FAB marketplace. Includes 401 Auth protection and smart skipping.
+// @version     2.3.0
+// @description A script to get all free assets from the FAB marketplace. Includes strict page redirection, auth protection, and cancel button.
 // @author      Chaython (Updated by Coding Partner)
 // @homepageURL https://github.com/Chaython/FAB-Free-Asset-Getter-Latest
 // @supportURL  https://github.com/Chaython/FAB-Free-Asset-Getter-Latest/issues
@@ -15,7 +15,8 @@
 (function () {
     `use strict`;
     var notificationQueueContainer = null;
-    var scriptIsRunning = false; // Flag to help us stop the loop if needed
+    var scriptIsRunning = false;
+    var mainBtn = null;
 
     // --- UTILS ---
     function showToast(message, type = 'success', duration = 3000) {
@@ -48,7 +49,6 @@
     }
 
     function getCSRFToken() {
-        // Method 1: Check Cookies
         let cookies = document.cookie.split(";");
         for (let i = 0; i < cookies.length; i++) {
             let cookie = cookies[i].trim();
@@ -57,13 +57,20 @@
             }
         }
 
-        // Method 2: Check Meta Tags (Fallback)
         let metaToken = document.querySelector('meta[name="csrf-token"], meta[name="xsrf-token"]');
         if (metaToken) {
             return metaToken.getAttribute('content');
         }
-
         return "";
+    }
+
+    // Helper function to allow instant cancellation during long waits
+    async function cancellableDelay(ms) {
+        let elapsed = 0;
+        while(elapsed < ms && scriptIsRunning) {
+            await new Promise(r => setTimeout(r, 100));
+            elapsed += 100;
+        }
     }
 
     // --- CORE LOGIC ---
@@ -122,15 +129,14 @@
         if (!currentToken) {
             console.error("[FAB Scraper] CRITICAL: Could not find CSRF token.");
             showToast("Error: Security token missing. Please log in or refresh.", "error", 5000);
-            return -1; // -1 indicates a fatal error to the main loop
+            return -1;
         }
 
         for (let item of items) {
-            if (!scriptIsRunning) break; // Allow emergency stop
+            if (!scriptIsRunning) break; // Instantly stop if cancelled
             if (item.isOwned) continue;
 
             try {
-                // A. Check details
                 let detailsReq = await fetch(`https://www.fab.com/i/listings/${item.id}`, {
                     headers: { "X-CsrfToken": currentToken, "X-Requested-With": "XMLHttpRequest" }
                 });
@@ -162,11 +168,10 @@
                 }
 
                 if (!freeOfferId) {
-                    console.warn(`[FAB Scraper] Skipped ${item.name} (Not actually free or no free license found)`);
+                    console.warn(`[FAB Scraper] Skipped ${item.name} (Not actually free)`);
                     continue;
                 }
 
-                // B. Add to library
                 showToast(`Adding: ${item.name}...`, "info", 1500);
                 const formData = new FormData();
                 formData.append("offer_id", freeOfferId);
@@ -183,9 +188,9 @@
                     item.element.style.border = "3px solid #45C761";
                     item.element.style.boxSizing = "border-box";
                 } else if (addReq.status === 401) {
-                    console.error(`[FAB Scraper] 401 Unauthorized encountered. Session may have expired.`);
+                    console.error(`[FAB Scraper] 401 Unauthorized encountered.`);
                     showToast("Error 401: Session expired. Please refresh the page.", "error", 5000);
-                    return -1; // Halt processing on 401
+                    return -1;
                 } else {
                      console.error(`[FAB Scraper] Failed to add ${item.name}. Status:`, addReq.status);
                 }
@@ -193,13 +198,17 @@
                 console.error(`[FAB Scraper] Error processing ${item.name}:`, e);
             }
 
-            await new Promise(r => setTimeout(r, 600));
+            await cancellableDelay(600);
         }
         return processedCount;
     }
 
     async function startLoop() {
         scriptIsRunning = true;
+
+        // Update button to Cancel state
+        mainBtn.textContent = "Cancel Script";
+        mainBtn.style.backgroundColor = "#dc3545"; // Red
         showToast("Starting Auto-Scroll & Claim...", "success");
 
         let previousHeight = 0;
@@ -212,13 +221,14 @@
 
             const addedNow = await processItems(currentItems);
 
-            // If processItems returns -1, we hit a critical auth error. Stop the script.
             if (addedNow === -1) {
                 scriptIsRunning = false;
-                document.getElementById('fab-auto-btn').textContent = "Failed. Refresh Page.";
-                document.getElementById('fab-auto-btn').style.backgroundColor = "#dc3545"; // Red
+                mainBtn.textContent = "Failed. Refresh Page.";
+                mainBtn.style.backgroundColor = "#dc3545";
                 break;
             }
+
+            if (!scriptIsRunning) break; // Check again in case it was cancelled mid-process
 
             totalAdded += addedNow;
 
@@ -226,27 +236,36 @@
             window.scrollTo({ left: 0, top: document.body.scrollHeight, behavior: "smooth" });
 
             showToast(`Scrolling... (Session Total: ${totalAdded})`, "warning", 2000);
-            await new Promise(r => setTimeout(r, 3000));
+            await cancellableDelay(3000); // 3-second wait, but interruptible!
+
+            if (!scriptIsRunning) break;
 
             let newHeight = document.body.scrollHeight;
 
             if (newHeight <= previousHeight) {
                 noChangeCount++;
                 window.scrollBy(0, -300);
-                await new Promise(r => setTimeout(r, 500));
+                await cancellableDelay(500);
                 window.scrollTo(0, document.body.scrollHeight);
-                await new Promise(r => setTimeout(r, 2000));
+                await cancellableDelay(2000);
 
                 if (noChangeCount >= 4) {
                     showToast("Finished! No new items loading.", "success", 5000);
                     scriptIsRunning = false;
-                    document.getElementById('fab-auto-btn').textContent = "Done!";
-                    document.getElementById('fab-auto-btn').style.backgroundColor = "#45C761";
+                    mainBtn.textContent = "Done!";
+                    mainBtn.style.backgroundColor = "#45C761";
                     break;
                 }
             } else {
                 noChangeCount = 0;
             }
+        }
+
+        // Reset UI if it was manually cancelled
+        if (mainBtn.textContent === "Stopping...") {
+            showToast("Script Cancelled.", "warning");
+            mainBtn.textContent = "Get Free Assets";
+            mainBtn.style.backgroundColor = "#45C761";
         }
     }
 
@@ -261,20 +280,21 @@
         });
         document.body.appendChild(notificationQueueContainer);
 
-        const btn = document.createElement("button");
-        btn.id = 'fab-auto-btn';
+        mainBtn = document.createElement("button");
+        mainBtn.id = 'fab-auto-btn';
 
-        const isHomePage = window.location.pathname === "/" || window.location.pathname === "/zh-cn";
+        // STRICT CHECK: Are we on the search page?
+        const isSearchPage = window.location.pathname.startsWith("/search");
 
-        if (isHomePage) {
-            btn.textContent = "Go to Free Search";
-            btn.style.backgroundColor = "#007bff";
+        if (!isSearchPage) {
+            mainBtn.textContent = "Go to Free Search";
+            mainBtn.style.backgroundColor = "#007bff";
         } else {
-            btn.textContent = "Get Free Assets";
-            btn.style.backgroundColor = "#45C761";
+            mainBtn.textContent = "Get Free Assets";
+            mainBtn.style.backgroundColor = "#45C761";
         }
 
-        Object.assign(btn.style, {
+        Object.assign(mainBtn.style, {
             position: "fixed", bottom: "80px", right: "20px", zIndex: "2147483647",
             padding: "12px 24px", color: "white",
             border: "2px solid white", borderRadius: "8px", fontWeight: "bold",
@@ -282,20 +302,23 @@
             fontFamily: "sans-serif"
         });
 
-        btn.onclick = () => {
-            if (isHomePage) {
+        mainBtn.onclick = () => {
+            if (!isSearchPage) {
+                // Instantly redirect to the correct page using the exact original URL structure
                 window.location.href = "https://www.fab.com/search?&is_free=1";
             } else {
-                btn.disabled = true;
-                btn.textContent = "Running... (Check Console)";
-                btn.style.backgroundColor = "#e0e0e0";
-                btn.style.color = "#666";
-                btn.style.cursor = "default";
-                startLoop();
+                if (!scriptIsRunning) {
+                    startLoop();
+                } else {
+                    // Trigger the cancel sequence
+                    scriptIsRunning = false;
+                    mainBtn.textContent = "Stopping...";
+                    mainBtn.style.backgroundColor = "#ffc107"; // Warning yellow
+                }
             }
         };
 
-        document.body.appendChild(btn);
+        document.body.appendChild(mainBtn);
     }
 
     if (document.readyState === "complete" || document.readyState === "interactive") {
