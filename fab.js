@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name        FAB Free Asset Getter (Fixed Redirect)
+// @name        FAB Free Asset Getter
 // @namespace   https://greasyfork.org/en/users/1443067-chaython
 // @version     2.3.0
 // @description A script to get all free assets from the FAB marketplace. Includes strict page redirection, auth protection, and cancel button.
-// @author      Chaython (Updated by Coding Partner)
+// @author      Chaython
 // @homepageURL https://github.com/Chaython/FAB-Free-Asset-Getter-Latest
 // @supportURL  https://github.com/Chaython/FAB-Free-Asset-Getter-Latest/issues
 // @match       https://www.fab.com/*
